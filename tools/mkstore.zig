@@ -17,6 +17,12 @@
 //!         The system's update, from its build's files, downloaded into
 //!         <dir> (its os.json and archive): checked, signed, and its files
 //!         where its build published them (base).
+//!     mkstore languages <store.zon> <os.json> <dir>
+//!         <dir>/apps.json: a catalogue of the language packs store.zon
+//!         lists, built with the system of <os.json> (its version), from
+//!         their archives in <dir>; for `make`, as a repository's.
+//!     mkstore language-files <store.zon>
+//!         The language packs' archives (<name>.tar.xz), a line each.
 //!     mkstore make [--key=<64-hex-seed or file>] [--previous=<apps.json>] <apps.json> <version> (<repository> <tag> <dir>)...
 //!         The catalogue, from each build's files, downloaded into <dir>
 //!         (its apps.json and archives). The key is DAZZLE_SIGNING_KEY's
@@ -31,7 +37,18 @@ const Ed25519 = std.crypto.sign.Ed25519;
 pub const Store = struct {
     /// Where the system's updates are.
     system: Entry,
+    /// The language packs built with the system.
+    languages: []const Language = &.{},
     apps: []const Entry,
+
+    /// A language pack: its archive is `<name>.tar.xz`.
+    pub const Language = struct {
+        name: []const u8,
+        /// Its language's code.
+        language: []const u8,
+        title: []const u8,
+        description: []const u8 = "",
+    };
 
     pub const Entry = struct {
         /// On GitHub, "<owner>/<name>".
@@ -100,6 +117,32 @@ pub fn main(init: std.process.Init) !void {
         try out.writer.print("{s} {s}\n", .{ store.system.repository, if (store.system.build.len > 0) store.system.build else "-" });
         for (store.apps) |e| try out.writer.print("{s} {s}\n", .{ e.repository, if (e.build.len > 0) e.build else "-" });
         try std.Io.File.stdout().writeStreamingAll(init.io, out.written());
+        return;
+    }
+    if (args.len == 3 and std.mem.eql(u8, args[1], "language-files")) {
+        const text = try std.Io.Dir.cwd().readFileAlloc(init.io, args[2], arena, .limited(1 << 20));
+        const store = try parseStore(arena, try arena.dupeSentinel(u8, text, 0), args[2]);
+        var out: std.Io.Writer.Allocating = .init(arena);
+        for (store.languages) |l| try out.writer.print("{s}.tar.xz\n", .{l.name});
+        try std.Io.File.stdout().writeStreamingAll(init.io, out.written());
+        return;
+    }
+    if (args.len == 5 and std.mem.eql(u8, args[1], "languages")) {
+        const text = try std.Io.Dir.cwd().readFileAlloc(init.io, args[2], arena, .limited(1 << 20));
+        const store = try parseStore(arena, try arena.dupeSentinel(u8, text, 0), args[2]);
+        const os = try std.json.parseFromSliceLeaky(App, arena, try std.Io.Dir.cwd().readFileAlloc(init.io, args[3], arena, .limited(1 << 20)), .{ .ignore_unknown_fields = true });
+        const dir = args[4];
+        var apps: std.ArrayList(App) = .empty;
+        for (store.languages) |l| {
+            const file = try std.fmt.allocPrint(arena, "{s}.tar.xz", .{l.name});
+            const archive = try std.Io.Dir.cwd().readFileAlloc(init.io, try std.fs.path.join(arena, &.{ dir, file }), arena, .limited(256 << 20));
+            try apps.append(arena, languagePack(arena, l, os, file, archive) catch |err| fail("{s}: {s}", .{ l.name, @errorName(err) }));
+        }
+        var out: std.Io.Writer.Allocating = .init(arena);
+        try std.json.Stringify.value(Catalogue{ .version = commitOf(os.version), .time = os.time, .apps = apps.items }, .{ .whitespace = .indent_2 }, &out.writer);
+        const f = try std.Io.Dir.cwd().createFile(init.io, try std.fs.path.join(arena, &.{ dir, "apps.json" }), .{});
+        defer f.close(init.io);
+        try f.writeStreamingAll(init.io, out.written());
         return;
     }
     if (args.len >= 2 and std.mem.eql(u8, args[1], "system")) {
@@ -173,6 +216,32 @@ pub fn main(init: std.process.Init) !void {
     usage();
 }
 
+/// A system's version's commit ("a7a5ecb" of "a7a5ecb-adb947547"), which
+/// what was built with it is versioned by.
+pub fn commitOf(version: []const u8) []const u8 {
+    return version[0 .. std.mem.indexOfScalar(u8, version, '-') orelse version.len];
+}
+
+/// Language pack `l`'s entry: built with the system `os` (its version),
+/// its archive `archive` (in `file`).
+pub fn languagePack(arena: std.mem.Allocator, l: Store.Language, os: App, file: []const u8, archive: []const u8) !App {
+    if (!plainName(file) or l.language.len == 0) return error.NotALanguagePack;
+    var digest: [32]u8 = undefined;
+    std.crypto.hash.sha2.Sha256.hash(archive, &digest, .{});
+    return .{
+        .name = l.name,
+        .title = l.title,
+        .description = l.description,
+        .version = commitOf(os.version),
+        .time = os.time,
+        .icon = "",
+        .file = file,
+        .size = archive.len,
+        .sha256 = try std.fmt.allocPrint(arena, "{x}", .{&digest}),
+        .language = l.language,
+    };
+}
+
 /// The signing key: `--key`'s, else DAZZLE_SIGNING_KEY's.
 fn keyPairOf(init: std.process.Init, arena: std.mem.Allocator, key_arg: ?[]const u8) !Ed25519.KeyPair {
     const key = key_arg orelse std.process.Environ.getPosix(init.minimal.environ, "DAZZLE_SIGNING_KEY") orelse "";
@@ -184,6 +253,8 @@ fn usage() noreturn {
     std.debug.print(
         \\usage: mkstore list <store.zon>
         \\       mkstore system [--key=<64-hex-seed or file>] <os.json> <repository> <tag> <dir>
+        \\       mkstore languages <store.zon> <os.json> <dir>
+        \\       mkstore language-files <store.zon>
         \\       mkstore make [--key=<64-hex-seed or file>] [--previous=<apps.json>] <apps.json> <version> (<repository> <tag> <dir>)...
         \\
     , .{});
@@ -305,7 +376,7 @@ test "the store.zon lists repositories, each with the build it is held at, if an
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const store = try parseStore(arena.allocator(),
-        \\.{ .system = .{ .repository = "dazzleos/dazzle" }, .apps = .{ .{ .repository = "dazzleos/files" }, .{ .repository = "dazzleos/motu", .build = "build-abc1234" } } }
+        \\.{ .system = .{ .repository = "dazzleos/dazzle" }, .languages = .{ .{ .name = "dazzle-language-ja", .language = "ja", .title = "Japanese input" } }, .apps = .{ .{ .repository = "dazzleos/files" }, .{ .repository = "dazzleos/motu", .build = "build-abc1234" } } }
     , "store.zon");
     try std.testing.expectEqual(@as(usize, 2), store.apps.len);
     try std.testing.expectEqualStrings("", store.apps[0].build);
@@ -370,6 +441,24 @@ test "an app is kept from the previous catalogue only if listed from its reposit
     var latest = app;
     latest.base = "https://github.com/dazzleos/files/releases/download/latest";
     try std.testing.expect(!fromBuild(latest, "dazzleos/files"));
+}
+
+test "a language pack, versioned as the system it was built with" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const os: App = .{ .name = "dazzle", .title = "Dazzle", .description = "", .version = "a7a5ecb-adb947547", .time = 7, .icon = "icon.png", .file = "dazzle-os.tar.xz", .size = 1, .sha256 = "" };
+    const l: Store.Language = .{ .name = "dazzle-language-ja", .language = "ja", .title = "Japanese input" };
+    const entry = try languagePack(a, l, os, "dazzle-language-ja.tar.xz", "abc");
+    try std.testing.expectEqualStrings("a7a5ecb", entry.version);
+    try std.testing.expectEqual(@as(u64, 7), entry.time);
+    try std.testing.expectEqualStrings("ja", entry.language);
+    try std.testing.expectEqual(@as(u64, 3), entry.size);
+    try std.testing.expectEqualStrings("ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad", entry.sha256);
+    // Then listed (and signed) as any app is.
+    const kp = try Ed25519.KeyPair.generateDeterministic(test_seed);
+    _ = try list(a, kp, entry, "https://github.com/dazzleos/dazzle/releases/download/build-a7a5ecb", "abc");
+    try std.testing.expectEqualStrings("a7a5ecb", commitOf("a7a5ecb"));
 }
 
 test "a plain file name" {

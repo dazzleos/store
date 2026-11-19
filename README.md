@@ -5,8 +5,9 @@ catalogue of the apps Settings installs (`apps.json`), published as this
 repository's "latest" release, from dazzleos/dazzle and dazzleos' app
 repositories.
 
-What it lists is in [store.zon](store.zon): the system, and the apps
-(Dazzle's language packs among them). Each is listed from one of its
+What it lists is in [store.zon](store.zon): the system, the language
+packs built with it (store.zon describes them: Dazzle publishes only their
+archives), and the apps. Each is listed from one of its
 repository's builds (the release each build publishes, tagged
 `build-<commit>`): its newest, or the one `store.zon` holds it at with
 `.build`. Its files stay where that build published them, and its entry

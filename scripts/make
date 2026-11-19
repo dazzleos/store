@@ -6,7 +6,7 @@
 #
 # A repository's build is the one store.zon holds it at, else its newest:
 # the "build-<commit>" release of the commit its "latest" release's
-# catalogue is of. While that is not there (as while its build is being
+# catalogue (or, for the system, os.json) is of. While that is not there (as while its build is being
 # published), what it gives is as the store's published catalogue (or
 # update) has it, if from a build; never from "latest", whose files change.
 #
@@ -31,20 +31,20 @@ fail() {
 }
 
 # The build of repository $1 to list ($2: the one store.zon holds it at,
-# or "-"), its catalogue downloaded into $3/apps.json: prints its tag, or
-# "-" if it has none (yet).
+# or "-"), its manifest $4 (apps.json, or the system's os.json) downloaded
+# into $3: prints its tag, or "-" if it has none (yet).
 build_of() {
     releases=https://github.com/$1/releases/download
     if [ "$2" != - ]; then
-        status=$(get "$releases/$2/apps.json" "$3/apps.json")
-        [ "$status" = 200 ] || fail "$1: $2/apps.json: HTTP $status"
+        status=$(get "$releases/$2/$4" "$3/$4")
+        [ "$status" = 200 ] || fail "$1: $2/$4: HTTP $status"
         echo "$2"
         return
     fi
-    status=$(get "$releases/latest/apps.json" "$3/latest.json")
+    status=$(get "$releases/latest/$4" "$3/latest.json")
     case $status in
     200) tag=build-$(jq -r '.version' "$3/latest.json" | cut -c1-7)
-         status=$(get "$releases/$tag/apps.json" "$3/apps.json") ;;
+         status=$(get "$releases/$tag/$4" "$3/$4") ;;
     esac
     case $status in
     200) echo "$tag" ;;
@@ -68,7 +68,7 @@ previous=$#
     read -r repository build
     dir=fetched/$repository
     mkdir -p "$dir"
-    build=$(build_of "$repository" "$build" "$dir")
+    build=$(build_of "$repository" "$build" "$dir" os.json)
     if [ "$build" = - ]; then
         # As the store has it, if from a build.
         # As the store has it, if from a build; else none (yet).
@@ -82,19 +82,31 @@ previous=$#
         fi
     else
         releases=https://github.com/$repository/releases/download/$build
-        [ "$(get "$releases/os.json" "$dir/os.json")" = 200 ] || fail "$repository: $build/os.json"
         file=$(jq -r '.file' "$dir/os.json")
         case $file in */* | .*) fail "$repository: bad file name $file" ;; esac
         curl -fsSL -o "$dir/$file" "$releases/$file"
         zig-out/bin/mkstore system zig-out/store/os.json "$repository" "$build" "$dir"
         echo "$repository: the system from $build"
     fi
+    # The language packs built with it, listed as store.zon has them.
+    languages=$dir/languages
+    mkdir -p "$languages"
+    if [ "$build" = - ]; then
+        set -- "$@" "$repository" - -
+    else
+        for file in $(zig-out/bin/mkstore language-files store.zon); do
+            curl -fsSL -o "$languages/$file" "$releases/$file"
+        done
+        zig-out/bin/mkstore languages store.zon "$dir/os.json" "$languages"
+        set -- "$@" "$repository" "$build" "$languages"
+        echo "$repository: the language packs from $build"
+    fi
 
     # The apps.
     while read -r repository build; do
         dir=fetched/$repository
         mkdir -p "$dir"
-        build=$(build_of "$repository" "$build" "$dir")
+        build=$(build_of "$repository" "$build" "$dir" apps.json)
         if [ "$build" = - ]; then
             echo "$repository: no build published, kept as it was" >&2
             set -- "$@" "$repository" - -

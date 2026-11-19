@@ -1,11 +1,14 @@
 // What the store lists, each from its repository's releases: the newest
 // build (its "build-<commit>" release), or the one `.build` names to hold
-// it at a build. The system (its updates), and the apps (Dazzle's own
-// catalogue's: its language packs).
+// it at a build. The system (its updates), the language packs built with
+// it (each <name>.tar.xz in its build's release), and the apps (each
+// repository's catalogue's).
 .{
     .system = .{ .repository = "dazzleos/dazzle" },
+    .languages = .{
+        .{ .name = "dazzle-language-ja", .language = "ja", .title = "Japanese input", .description = "Converts kana to kanji a phrase at a time" },
+    },
     .apps = .{
-        .{ .repository = "dazzleos/dazzle" },
         .{ .repository = "dazzleos/files" },
         .{ .repository = "dazzleos/camera" },
         .{ .repository = "dazzleos/text-editor" },
