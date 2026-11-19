@@ -1,8 +1,8 @@
-# Makes the store's catalogue (scripts/make) every hour, and on each push
-# to the default branch: the apps of dazzleos' app repositories, each from
-# its build's release, signed with the key Dazzle's builds trust. If it
-# has changed, it is published as the "latest" release's apps.json, which
-# Dazzle's catalogue lists as a source.
+# Makes the store's catalogue and the system's update (scripts/make) every
+# hour, and on each push to the default branch: the system and the apps,
+# each from its repository's build's release, signed with the key
+# Dazzle's builds trust. What has changed is published in the "latest"
+# release (apps.json, os.json): Dazzle's software server.
 name: Store
 
 on:
@@ -40,22 +40,27 @@ jobs:
           DAZZLE_SIGNING_KEY: ${{ secrets.DAZZLE_SIGNING_KEY }}
         run: scripts/make
 
-      - name: Publish it, if it has changed
+      - name: Publish them, if they have changed
         if: github.event_name != 'pull_request' && github.ref_name == github.event.repository.default_branch
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
         run: |
-          if gh release view latest > /dev/null 2>&1; then
-            gh release download latest -p apps.json -O published.json || true
-            if cmp -s published.json zig-out/store/apps.json; then
-              echo "Unchanged"
-              exit 0
-            fi
-            gh release upload latest zig-out/store/apps.json --clobber
-          else
-            gh release create latest zig-out/store/apps.json \
+          if ! gh release view latest > /dev/null 2>&1; then
+            gh release create latest zig-out/store/* \
               --target "$GITHUB_SHA" --title "The store" --latest \
-              --notes "The catalogue of the apps Dazzle's Settings installs (Software): each listed from its repository's build, which its files are downloaded from."
+              --notes "Dazzle's software server: the system's updates (os.json) and the catalogue of apps (apps.json) Settings installs, each from the release of its repository's build, which its files are downloaded from."
+          else
+            for f in zig-out/store/*; do
+              name=$(basename "$f")
+              rm -f "published-$name"
+              gh release download latest -p "$name" -O "published-$name" 2> /dev/null || true
+              if cmp -s "published-$name" "$f"; then
+                echo "$name: unchanged"
+              else
+                gh release upload latest "$f" --clobber
+              fi
+            done
           fi
           jq -r '.apps[] | "\(.name) \(.version) \(.base)"' zig-out/store/apps.json
+          [ ! -f zig-out/store/os.json ] || jq -r '"system \(.version) \(.base)"' zig-out/store/os.json

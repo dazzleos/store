@@ -1,11 +1,13 @@
 # Store
 
-The catalogue of the apps Dazzle installs from Settings, Software: one
-`apps.json`, published as this repository's "latest" release, listing the
-apps of dazzleos' app repositories.
+Dazzle's software server: the system's updates (`os.json`) and the
+catalogue of the apps Settings installs (`apps.json`), published as this
+repository's "latest" release, from dazzleos/dazzle and dazzleos' app
+repositories.
 
-The apps are listed in [store.zon](store.zon). Each is listed from one of
-its repository's builds (the release each build publishes, tagged
+What it lists is in [store.zon](store.zon): the system, and the apps
+(Dazzle's language packs among them). Each is listed from one of its
+repository's builds (the release each build publishes, tagged
 `build-<commit>`): its newest, or the one `store.zon` holds it at with
 `.build`. Its files stay where that build published them, and its entry
 says so (`base`). While an app's newest build cannot be found (as while it
@@ -23,7 +25,7 @@ when this repository changes, and publishes it if it has changed.
 DAZZLE_SIGNING_KEY=<key or key file> scripts/make
 ```
 
-writes `zig-out/store/apps.json`, with Zig 0.17.1 (`ZIG` to give another
+writes `zig-out/store/apps.json` and `os.json`, with Zig 0.17.1 (`ZIG` to give another
 `zig`), curl and jq. `zig build test` runs the tests.
 
 ## Adding an app

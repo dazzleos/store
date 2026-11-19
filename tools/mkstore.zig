@@ -11,8 +11,12 @@
 //!
 //! Usage:
 //!     mkstore list <store.zon>
-//!         Each app's repository and the build it names ("-" for the
-//!         newest), a line each.
+//!         The system's repository and the build it names ("-" for the
+//!         newest), then each app's, a line each.
+//!     mkstore system [--key=<64-hex-seed or file>] <os.json> <repository> <tag> <dir>
+//!         The system's update, from its build's files, downloaded into
+//!         <dir> (its os.json and archive): checked, signed, and its files
+//!         where its build published them (base).
 //!     mkstore make [--key=<64-hex-seed or file>] [--previous=<apps.json>] <apps.json> <version> (<repository> <tag> <dir>)...
 //!         The catalogue, from each build's files, downloaded into <dir>
 //!         (its apps.json and archives). The key is DAZZLE_SIGNING_KEY's
@@ -25,6 +29,8 @@ const Ed25519 = std.crypto.sign.Ed25519;
 
 /// store.zon.
 pub const Store = struct {
+    /// Where the system's updates are.
+    system: Entry,
     apps: []const Entry,
 
     pub const Entry = struct {
@@ -91,8 +97,34 @@ pub fn main(init: std.process.Init) !void {
         const text = try std.Io.Dir.cwd().readFileAlloc(init.io, args[2], arena, .limited(1 << 20));
         const store = try parseStore(arena, try arena.dupeSentinel(u8, text, 0), args[2]);
         var out: std.Io.Writer.Allocating = .init(arena);
+        try out.writer.print("{s} {s}\n", .{ store.system.repository, if (store.system.build.len > 0) store.system.build else "-" });
         for (store.apps) |e| try out.writer.print("{s} {s}\n", .{ e.repository, if (e.build.len > 0) e.build else "-" });
         try std.Io.File.stdout().writeStreamingAll(init.io, out.written());
+        return;
+    }
+    if (args.len >= 2 and std.mem.eql(u8, args[1], "system")) {
+        var i: usize = 2;
+        var key_arg: ?[]const u8 = null;
+        if (i < args.len and std.mem.startsWith(u8, args[i], "--key=")) {
+            key_arg = args[i]["--key=".len..];
+            i += 1;
+        }
+        if (args.len != i + 4) usage();
+        const kp = try keyPairOf(init, arena, key_arg);
+        const repository = args[i + 1];
+        const dir = args[i + 3];
+        const base = try std.fmt.allocPrint(arena, "https://github.com/{s}/releases/download/{s}", .{ repository, args[i + 2] });
+        const json = try std.Io.Dir.cwd().readFileAlloc(init.io, try std.fs.path.join(arena, &.{ dir, "os.json" }), arena, .limited(1 << 20));
+        const m = try std.json.parseFromSliceLeaky(App, arena, json, .{ .ignore_unknown_fields = true });
+        if (!plainName(m.file)) fail("{s}: the system's file \"{s}\" is not a plain name", .{ repository, m.file });
+        const archive = try std.Io.Dir.cwd().readFileAlloc(init.io, try std.fs.path.join(arena, &.{ dir, m.file }), arena, .limited(256 << 20));
+        const entry = list(arena, kp, m, base, archive) catch |err| fail("{s}: the system: {s}", .{ repository, @errorName(err) });
+        var out: std.Io.Writer.Allocating = .init(arena);
+        try std.json.Stringify.value(entry, .{ .whitespace = .indent_2 }, &out.writer);
+        try out.writer.writeByte('\n');
+        const file = try std.Io.Dir.cwd().createFile(init.io, args[i], .{});
+        defer file.close(init.io);
+        try file.writeStreamingAll(init.io, out.written());
         return;
     }
     if (args.len >= 2 and std.mem.eql(u8, args[1], "make")) {
@@ -108,10 +140,7 @@ pub fn main(init: std.process.Init) !void {
             } else usage();
         }
         if (args.len < i + 2 or (args.len - (i + 2)) % 3 != 0) usage();
-        const key = key_arg orelse std.process.Environ.getPosix(init.minimal.environ, "DAZZLE_SIGNING_KEY") orelse
-            "";
-        if (key.len == 0) fail("no signing key: give --key or DAZZLE_SIGNING_KEY", .{});
-        const kp = Ed25519.KeyPair.generateDeterministic(try readSeed(init.io, arena, key)) catch unreachable;
+        const kp = try keyPairOf(init, arena, key_arg);
         const out_path = args[i];
         const version = args[i + 1];
         var apps: std.ArrayList(StoreApp) = .empty;
@@ -144,9 +173,17 @@ pub fn main(init: std.process.Init) !void {
     usage();
 }
 
+/// The signing key: `--key`'s, else DAZZLE_SIGNING_KEY's.
+fn keyPairOf(init: std.process.Init, arena: std.mem.Allocator, key_arg: ?[]const u8) !Ed25519.KeyPair {
+    const key = key_arg orelse std.process.Environ.getPosix(init.minimal.environ, "DAZZLE_SIGNING_KEY") orelse "";
+    if (key.len == 0) fail("no signing key: give --key or DAZZLE_SIGNING_KEY", .{});
+    return Ed25519.KeyPair.generateDeterministic(try readSeed(init.io, arena, key)) catch unreachable;
+}
+
 fn usage() noreturn {
     std.debug.print(
         \\usage: mkstore list <store.zon>
+        \\       mkstore system [--key=<64-hex-seed or file>] <os.json> <repository> <tag> <dir>
         \\       mkstore make [--key=<64-hex-seed or file>] [--previous=<apps.json>] <apps.json> <version> (<repository> <tag> <dir>)...
         \\
     , .{});
@@ -268,7 +305,7 @@ test "the store.zon lists repositories, each with the build it is held at, if an
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const store = try parseStore(arena.allocator(),
-        \\.{ .apps = .{ .{ .repository = "dazzleos/files" }, .{ .repository = "dazzleos/motu", .build = "build-abc1234" } } }
+        \\.{ .system = .{ .repository = "dazzleos/dazzle" }, .apps = .{ .{ .repository = "dazzleos/files" }, .{ .repository = "dazzleos/motu", .build = "build-abc1234" } } }
     , "store.zon");
     try std.testing.expectEqual(@as(usize, 2), store.apps.len);
     try std.testing.expectEqualStrings("", store.apps[0].build);
