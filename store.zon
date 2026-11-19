@@ -1,0 +1,16 @@
+// The apps the store lists, each from its repository's releases: the
+// newest build (its "build-<commit>" release), or the one `.build` names
+// to hold an app at a build.
+.{
+    .apps = .{
+        .{ .repository = "dazzleos/files" },
+        .{ .repository = "dazzleos/camera" },
+        .{ .repository = "dazzleos/text-editor" },
+        .{ .repository = "dazzleos/chat" },
+        .{ .repository = "dazzleos/terminal" },
+        .{ .repository = "dazzleos/motu" },
+        .{ .repository = "dazzleos/globe" },
+        .{ .repository = "dazzleos/develop" },
+        .{ .repository = "dazzleos/geppetto" },
+    },
+}

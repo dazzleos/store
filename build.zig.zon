@@ -1,0 +1,14 @@
+.{
+    .name = .store,
+    .version = "0.0.0",
+    .fingerprint = 0xff575877016bdb9c, // Changing this has security and trust implications.
+    .minimum_zig_version = "0.17.1",
+    .dependencies = .{},
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "store.zon",
+        "tools",
+        "LICENSE",
+    },
+}

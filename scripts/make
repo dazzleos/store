@@ -1,0 +1,60 @@
+#!/bin/sh
+# Makes the store's catalogue, zig-out/store/apps.json: each app in
+# store.zon from its build's release, downloaded into fetched/<repository>/,
+# then checked and signed by mkstore.
+#
+# An app's build is the one store.zon holds it at, else its newest: the
+# "build-<commit>" release of the commit its "latest" release is of (or
+# "latest" itself, for a repository that does not publish its builds so).
+#
+# Needs curl and jq, and the signing key in DAZZLE_SIGNING_KEY (its 64 hex
+# digits, or a file of them). ZIG is the zig to build with.
+set -eu
+cd "$(dirname "$0")/.."
+zig=${ZIG:-zig}
+"$zig" build
+version=$(git rev-parse --short=7 HEAD 2>/dev/null || echo unknown)
+
+# Downloads $1 to $2, printing the HTTP status (failing for no answer).
+get() {
+    curl -sSL -o "$2" -w '%{http_code}' "$1"
+}
+
+rm -rf fetched
+set --
+while read -r repository build; do
+    releases=https://github.com/$repository/releases/download
+    dir=fetched/$repository
+    mkdir -p "$dir"
+    if [ "$build" = - ]; then
+        # An app with nothing published (yet) is left out; any other
+        # failure stops this, leaving the store's catalogue as it was.
+        status=$(get "$releases/latest/apps.json" "$dir/apps.json")
+        if [ "$status" = 404 ]; then
+            echo "$repository: nothing published, left out" >&2
+            continue
+        fi
+        [ "$status" = 200 ] || { echo "$repository: latest/apps.json: HTTP $status" >&2; exit 1; }
+        build=build-$(jq -r '.apps[0].version' "$dir/apps.json" | cut -c1-7)
+        status=$(get "$releases/$build/apps.json" "$dir/apps.json")
+        case $status in
+        200) ;;
+        404) build=latest
+             [ "$(get "$releases/latest/apps.json" "$dir/apps.json")" = 200 ] || exit 1 ;;
+        *) echo "$repository: $build/apps.json: HTTP $status" >&2; exit 1 ;;
+        esac
+    else
+        status=$(get "$releases/$build/apps.json" "$dir/apps.json")
+        [ "$status" = 200 ] || { echo "$repository: $build/apps.json: HTTP $status" >&2; exit 1; }
+    fi
+    for file in $(jq -r '.apps[].file' "$dir/apps.json"); do
+        case $file in */* | .*) echo "$repository: bad file name $file" >&2; exit 1 ;; esac
+        curl -fsSL -o "$dir/$file" "$releases/$build/$file"
+    done
+    echo "$repository: $build"
+    set -- "$@" "$repository" "$build" "$dir"
+done <<LIST
+$(zig-out/bin/mkstore list store.zon)
+LIST
+mkdir -p zig-out/store
+zig-out/bin/mkstore make zig-out/store/apps.json "$version" "$@"
