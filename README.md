@@ -8,7 +8,9 @@ The apps are listed in [store.zon](store.zon). Each is listed from one of
 its repository's builds (the release each build publishes, tagged
 `build-<commit>`): its newest, or the one `store.zon` holds it at with
 `.build`. Its files stay where that build published them, and its entry
-says so (`base`). Each archive is checked against its build's catalogue
+says so (`base`). While an app's newest build cannot be found (as while it
+is being published), it stays as the store last listed it; an app is never
+listed from its "latest" release, whose files are replaced by each build. Each archive is checked against its build's catalogue
 and signed with the key Dazzle's own builds trust, so app repositories need
 no key of their own.
 

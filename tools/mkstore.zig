@@ -13,10 +13,12 @@
 //!     mkstore list <store.zon>
 //!         Each app's repository and the build it names ("-" for the
 //!         newest), a line each.
-//!     mkstore make [--key=<64-hex-seed or file>] <apps.json> <version> (<repository> <tag> <dir>)...
+//!     mkstore make [--key=<64-hex-seed or file>] [--previous=<apps.json>] <apps.json> <version> (<repository> <tag> <dir>)...
 //!         The catalogue, from each build's files, downloaded into <dir>
 //!         (its apps.json and archives). The key is DAZZLE_SIGNING_KEY's
-//!         if no --key is given.
+//!         if no --key is given. A repository whose tag is "-" (its
+//!         build could not be got) keeps its apps as the previous
+//!         catalogue (the one published) lists them, if from a build.
 
 const std = @import("std");
 const Ed25519 = std.crypto.sign.Ed25519;
@@ -96,9 +98,14 @@ pub fn main(init: std.process.Init) !void {
     if (args.len >= 2 and std.mem.eql(u8, args[1], "make")) {
         var i: usize = 2;
         var key_arg: ?[]const u8 = null;
-        if (i < args.len and std.mem.startsWith(u8, args[i], "--key=")) {
-            key_arg = args[i]["--key=".len..];
-            i += 1;
+        var previous: []const StoreApp = &.{};
+        while (i < args.len and std.mem.startsWith(u8, args[i], "--")) : (i += 1) {
+            if (std.mem.startsWith(u8, args[i], "--key=")) {
+                key_arg = args[i]["--key=".len..];
+            } else if (std.mem.startsWith(u8, args[i], "--previous=")) {
+                const json = try std.Io.Dir.cwd().readFileAlloc(init.io, args[i]["--previous=".len..], arena, .limited(4 << 20));
+                previous = (try std.json.parseFromSliceLeaky(StoreCatalogue, arena, json, .{ .ignore_unknown_fields = true })).apps;
+            } else usage();
         }
         if (args.len < i + 2 or (args.len - (i + 2)) % 3 != 0) usage();
         const key = key_arg orelse std.process.Environ.getPosix(init.minimal.environ, "DAZZLE_SIGNING_KEY") orelse
@@ -113,6 +120,10 @@ pub fn main(init: std.process.Init) !void {
             const repository = args[j];
             const tag = args[j + 1];
             const dir = args[j + 2];
+            if (std.mem.eql(u8, tag, "-")) {
+                for (previous) |app| if (fromBuild(app, repository)) try apps.append(arena, app);
+                continue;
+            }
             const base = try std.fmt.allocPrint(arena, "https://github.com/{s}/releases/download/{s}", .{ repository, tag });
             const json = try std.Io.Dir.cwd().readFileAlloc(init.io, try std.fs.path.join(arena, &.{ dir, "apps.json" }), arena, .limited(1 << 20));
             const catalogue = try std.json.parseFromSliceLeaky(Catalogue, arena, json, .{ .ignore_unknown_fields = true });
@@ -136,7 +147,7 @@ pub fn main(init: std.process.Init) !void {
 fn usage() noreturn {
     std.debug.print(
         \\usage: mkstore list <store.zon>
-        \\       mkstore make [--key=<64-hex-seed or file>] <apps.json> <version> (<repository> <tag> <dir>)...
+        \\       mkstore make [--key=<64-hex-seed or file>] [--previous=<apps.json>] <apps.json> <version> (<repository> <tag> <dir>)...
         \\
     , .{});
     std.process.exit(2);
@@ -216,6 +227,14 @@ pub fn list(arena: std.mem.Allocator, kp: Ed25519.KeyPair, app: App, base: []con
         .language = app.language,
         .base = base,
     };
+}
+
+/// Whether the store lists `app` from one of `repository`'s builds (not
+/// its "latest" release, whose files change).
+pub fn fromBuild(app: StoreApp, repository: []const u8) bool {
+    var buf: [256]u8 = undefined;
+    const prefix = std.fmt.bufPrint(&buf, "https://github.com/{s}/releases/download/build-", .{repository}) catch return false;
+    return std.mem.startsWith(u8, app.base, prefix) and std.mem.indexOfScalar(u8, app.base[prefix.len..], '/') == null;
 }
 
 /// The catalogue of `apps`, sorted by name; its time the newest app's.
@@ -299,6 +318,21 @@ test "the catalogue: apps by name, as Dazzle reads it, and no app twice" {
     try std.testing.expectEqual(@as(u64, 9), back.time);
     var twice = [_]StoreApp{ apps[0], apps[0] };
     try std.testing.expectError(error.DuplicateApp, combine(a, "1234567", &twice));
+}
+
+test "an app is kept from the previous catalogue only if listed from its repository's build" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const kp = try Ed25519.KeyPair.generateDeterministic(test_seed);
+    var buf: [64]u8 = undefined;
+    const app = try list(a, kp, testApp("dazzle-files", "f", &buf), "https://github.com/dazzleos/files/releases/download/build-abc1234", "f");
+    try std.testing.expect(fromBuild(app, "dazzleos/files"));
+    try std.testing.expect(!fromBuild(app, "dazzleos/file"));
+    try std.testing.expect(!fromBuild(app, "dazzleos/camera"));
+    var latest = app;
+    latest.base = "https://github.com/dazzleos/files/releases/download/latest";
+    try std.testing.expect(!fromBuild(latest, "dazzleos/files"));
 }
 
 test "a plain file name" {
